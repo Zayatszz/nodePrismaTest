@@ -1,0 +1,131 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model User {
+  id          Int       @id @default(autoincrement())
+  email       String    @unique
+  userName    String?
+  phoneNumber String    @unique
+  createdAt   DateTime  @default(now())
+  creditScore Int       @default(70)
+  role        String    @default("user")
+  password    String
+  bookings    Booking[]
+}
+
+model Carwash {
+  id          Int      @id @default(autoincrement())
+  location    String
+  description String
+  address     String
+  capacity    Int
+  phoneNumber String   @db.VarChar(15)
+  name        String
+  province    String   @default("")
+  imageUrl    String
+  stars       Int
+}
+
+model CarwashService {
+  id             Int           @id @default(autoincrement())
+  location       String
+  description    String
+  address        String
+  capacity       Int
+  latitude       Float
+  longitude      Float
+  phoneNumber    String        @db.VarChar(15)
+  name           String
+  district       String        @default("")
+  province       String        @default("")
+  imageUrl       String
+  status         String        @default("pending")
+  carWashTypes   CarWashType[]
+  ratings        Rating[]
+  schedules      Timetable[]
+  bookings       Booking[]
+  pincode        String?
+  stars          Int
+}
+
+model QPayInvoice {
+  id            Int        @id @default(autoincrement())
+  invoiceId     String     @unique
+  bookingId     Int
+  status        String     @default("pending")
+  createdAt     DateTime   @default(now())
+  updatedAt     DateTime   @updatedAt
+  amount        Float
+  paymentDetail String?
+  callbackUrl   String
+  booking       Booking    @relation(fields: [bookingId], references: [id])
+
+  @@index([bookingId])
+}
+
+model Booking {
+  id               Int              @id @default(autoincrement())
+  scheduledTime    DateTime
+  createdAt        DateTime         @default(now())
+  carWashTypeId    Int?
+  washType         String?
+  carSize          String?
+  date             DateTime
+  deletedAt        DateTime?
+  endTime          DateTime
+  paymentDetail    String?
+  price            Float
+  status           String           @default("pending")
+  timetableId      Int
+  userId           Int
+  carWashServiceId Int
+  carNumber        String?
+  carWashType      CarWashType?     @relation(fields: [carWashTypeId], references: [id])
+  timetable        Timetable        @relation(fields: [timetableId], references: [id])
+  user             User             @relation(fields: [userId], references: [id])
+  carwashService   CarwashService   @relation(fields: [carWashServiceId], references: [id])
+  qpayInvoices     QPayInvoice[]    @relation
+
+  @@index([carWashServiceId])
+}
+
+model CarWashType {
+  id        Int              @id @default(autoincrement())
+  serviceId Int
+  type      String
+  deletedAt DateTime?
+  duration  Int
+  price     Float
+  size      String
+  bookings  Booking[]
+  service   CarwashService   @relation(fields: [serviceId], references: [id])
+}
+
+model Timetable {
+  id        Int              @id @default(autoincrement())
+  serviceId Int
+  startTime DateTime
+  endTime   DateTime
+  date      DateTime
+  deletedAt DateTime?
+  holidays  DateTime[]
+  bookings  Booking[]
+  service   CarwashService   @relation(fields: [serviceId], references: [id])
+}
+
+model Rating {
+  id         Int              @id @default(autoincrement())
+  serviceId  Int
+  stars      Int
+  feedback   String
+  createdAt  DateTime         @default(now())
+  deletedAt  DateTime?
+  archivedAt DateTime?
+  service    CarwashService   @relation(fields: [serviceId], references: [id])
+}
