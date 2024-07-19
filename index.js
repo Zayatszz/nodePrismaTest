@@ -41,8 +41,6 @@ app.post('/users', async (req, res) => {
   }
 });
 
-
-
 // Route to update user information
 app.put('/users/:id', async (req, res) => {
   try {
@@ -63,7 +61,6 @@ app.put('/users/:id', async (req, res) => {
       email,
       userName,
       phoneNumber,
-      
     };
 
     // If password is provided, hash it before saving
@@ -85,8 +82,6 @@ app.put('/users/:id', async (req, res) => {
     res.status(500).json({ error: error.message });
   }
 });
-
-
 
 // Route to handle user login
 app.post('/login', async (req, res) => {
@@ -162,7 +157,6 @@ app.post('/carwashes', async (req, res) => {
   }
 });
 
-
 // Route to fetch CarwashServices
 app.get('/carwashservices', async (req, res) => {
   try {
@@ -202,20 +196,125 @@ app.post('/carwashservices', async (req, res) => {
           create: carWashTypes,
         },
         schedules: {
-          create: schedules,
+          create: schedules.map(schedule => ({
+            startTime: new Date(`1970-01-01T${schedule.startTime}:00Z`).toISOString(),  // Construct full ISO string
+            endTime: new Date(`1970-01-01T${schedule.endTime}:00Z`).toISOString(),      // Construct full ISO string
+            date: new Date(schedule.date).toISOString(),
+            holidays: schedule.holidays.map(holiday => new Date(holiday).toISOString()),
+          })),
         },
       },
     });
     res.status(201).json(carwashService);
   } catch (error) {
+    console.error(error);
     res.status(400).json({ error: error.message });
   }
 });
 
+// GET endpoint to fetch bookings
+app.get('/bookings', async (req, res) => {
+  try {
+    const bookings = await prisma.booking.findMany({
+      include: {
+        carWashType: true,
+        timetable: true,
+        user: true,
+        carwashService: true ,
+      },
+    });
+    res.json(bookings);
+  } catch (error) {
+    console.error('Failed to fetch bookings:', error);
+    res.status(500).json({ error: 'Failed to fetch bookings.' });
+  }
+});
+
+
+// POST endpoint to create a new booking
+app.post('/bookings', async (req, res) => {
+  try {
+    const {
+      scheduledTime,
+      carWashTypeId,
+      washType,
+      carSize,
+      date,
+      endTime,
+      paymentDetail,
+      price,
+      status,
+      timetableId,
+      userId,
+      carWashServiceId,
+      carNumber,
+    } = req.body;
+
+    if (
+      !scheduledTime ||
+      !carWashTypeId ||
+      !washType ||
+      !carSize ||
+      !date ||
+      !endTime ||
+      !price ||
+      !timetableId ||
+      !userId ||
+      !carWashServiceId
+    ) {
+      return res.status(400).json({ error: 'Missing required fields' });
+    }
+
+    const booking = await prisma.booking.create({
+      data: {
+        scheduledTime: new Date(scheduledTime),
+        carWashTypeId,
+        washType,
+        carSize,
+        date: new Date(date),
+        endTime: new Date(endTime),
+        paymentDetail,
+        price,
+        status,
+        timetableId,
+        userId,
+        carWashServiceId,
+        carNumber,
+      },
+    });
+
+    res.status(201).json(booking);
+  } catch (error) {
+    console.error('Failed to create booking:', error);
+    res.status(500).json({ error: 'Failed to create booking' });
+  }
+});
+
+// Add this route to your Express server
+
+app.get('/user-orders/:userId', async (req, res) => {
+  const { userId } = req.params;
+  try {
+    const orders = await prisma.booking.findMany({
+      where: {
+        userId: parseInt(userId, 10),
+      },
+      include: {
+        carWashType: true,
+        timetable: true,
+        carwashService: true,
+      },
+    });
+    res.json(orders);
+  } catch (error) {
+    console.error('Failed to fetch orders:', error);
+    res.status(500).json({ error: 'Failed to fetch orders.' });
+  }
+});
+
+
+
 const PORT = process.env.PORT || 3003;
 app.listen(PORT, () => {
   console.log(`Server is running on port ${PORT}`);
-//   const crypto = require('crypto');
-// const secretKey = crypto.randomBytes(32).toString('hex');
-// console.log(secretKey);
 });
