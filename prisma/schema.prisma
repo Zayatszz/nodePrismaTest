@@ -43,6 +43,7 @@ model CarwashService {
   phoneNumber    String        @db.VarChar(15)
   name           String
   district       String        @default("")
+  emuCode       String?       @unique
   province       String        @default("")
   imageUrl       String
   status         String        @default("pending")

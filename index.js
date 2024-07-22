@@ -2,12 +2,123 @@ const express = require('express');
 const { PrismaClient } = require('@prisma/client');
 const jwt = require('jsonwebtoken');
 const bcrypt = require('bcrypt');
+const axios = require('axios'); 
 const prisma = new PrismaClient();
 const app = express();
+const generateRandomEmuCode = require('./emuCodeGenerator');
 
 app.use(express.json());
 
-// Example route to fetch users
+
+// QPay token fetching API
+app.post('/qpay/token', async (req, res) => {
+  const username = process.env.QPAY_USERNAME;
+  const password = process.env.QPAY_PASSWORD;
+
+  const authString = Buffer.from(`${username}:${password}`).toString('base64');
+  const config = {
+    headers: {
+      'Content-Type': 'application/json',
+      'Authorization': `Basic ${authString}`,
+    },
+  };
+
+  try {
+    const response = await axios.post(
+      'https://merchant.qpay.mn/v2/auth/token',
+      {}, // Empty body since the token request does not require a body
+      config
+    );
+
+    console.log("QPay token fetched successfully");
+    console.log(response.data);
+    res.status(200).json({ access_token: response.data.access_token });
+  } catch (error) {
+    console.error('Error fetching QPay token:', error.response ? error.response.data : error.message);
+    res.status(error.response ? error.response.status : 500).json({
+      error: error.response ? error.response.data : 'Internal Server Error',
+    });
+  }
+});
+
+// Create QPay invoice API
+app.post('/qpay/invoice', async (req, res) => {
+  const { token, bookingId, amount, description, service, userId } = req.body;
+  const invoice_code = process.env.INVOICE_CODE;
+  const callback_url = `http://www.emu.mn/api/qpay/callback/${bookingId}`;
+  const sender_invoice_no = bookingId.toString();
+
+  try {
+    // Fetch user details from the database
+    const user = await prisma.user.findUnique({
+      where: { id: userId },
+      select: {
+        name: true,
+        email: true,
+        phoneNumber: true,
+      },
+    });
+
+    if (!user) {
+      return res.status(404).json({ error: 'User not found' });
+    }
+
+    // Construct the invoice receiver data
+    const invoice_receiver_data = {
+      name: user.name,
+      email: user.email,
+      phone: user.phoneNumber,
+    };
+
+    // Send the request to QPay
+    const response = await axios.post('https://merchant.qpay.mn/v2/invoice', {
+      invoice_code,
+      sender_invoice_no,
+      invoice_receiver_code: "EJA",
+      sender_branch_code: service,
+      amount,
+      invoice_description: description,
+      callback_url,
+      sender_staff_code: 'online',
+      invoice_receiver_data
+    }, {
+      headers: {
+        Authorization: `Bearer ${token}`,
+      },
+    });
+
+    const invoiceId = response.data.invoice_id;
+
+    const newInvoice = await prisma.qPayInvoice.create({
+      data: {
+        invoiceId,
+        bookingId,
+        status: 'pending',
+        amount,
+        callbackUrl: callback_url,
+      },
+    });
+
+    const paymentDetail = newInvoice.id.toString();
+
+    // Update booking with the new QPayInvoice
+    await prisma.booking.update({
+      where: { id: bookingId },
+      data: {
+        qpayInvoices: {
+          connect: { id: newInvoice.id },
+        },
+        paymentDetail,
+      },
+    });
+
+    res.status(200).json({ invoiceId, qrCode: response.data });
+  } catch (error) {
+    console.error('Error creating QPay invoice:', error.response ? error.response.data : error.message);
+    res.status(500).json({ error: 'Error creating QPay invoice' });
+  }
+});
+//  fetch users
 app.get('/users', async (req, res) => {
   try {
     const users = await prisma.user.findMany();
@@ -164,6 +275,7 @@ app.get('/carwashservices', async (req, res) => {
       include: {
         carWashTypes: true,
         schedules: true,
+        bookings:true
       }
     });
     res.json(carwashServices);
@@ -174,8 +286,15 @@ app.get('/carwashservices', async (req, res) => {
 
 // POST endpoint to create a new CarwashService
 app.post('/carwashservices', async (req, res) => {
+  let emuCodeKey;
+  
   try {
-    const { location, description, address, capacity, latitude, longitude, phoneNumber, name, district, province, imageUrl, status, pincode, stars, carWashTypes, schedules } = req.body;
+    const { location, description, address, capacity, latitude, longitude, phoneNumber, name, district, emuCode, province, imageUrl, status, pincode, stars, carWashTypes, schedules } = req.body;
+    if(province === 'Улаанбаатар') {
+      emuCodeKey = district;
+    } else {
+      emuCodeKey = province;
+    }
     const carwashService = await prisma.carwashService.create({
       data: {
         location,
@@ -187,6 +306,7 @@ app.post('/carwashservices', async (req, res) => {
         phoneNumber,
         name,
         district,
+        emuCode: generateRandomEmuCode(emuCodeKey),
         province,
         imageUrl,
         status,
@@ -230,6 +350,31 @@ app.get('/bookings', async (req, res) => {
   }
 });
 
+// GET endpoint to fetch a single booking by ID
+app.get('/bookings/status/:id', async (req, res) => {
+  try {
+    const { id } = req.params;
+    const booking = await prisma.booking.findUnique({
+      where: { id: parseInt(id, 10) },
+      include: {
+        carWashType: true,
+        timetable: true,
+        user: true,
+        carwashService: true,
+      },
+    });
+    const status = booking.status;
+
+    if (!booking) {
+      return res.status(404).json({ error: 'Booking status not found' });
+    }
+
+    res.json(status);
+  } catch (error) {
+    console.error('Failed to fetch booking:', error);
+    res.status(500).json({ error: 'Failed to fetch booking.' });
+  }
+});
 
 // POST endpoint to create a new booking
 app.post('/bookings', async (req, res) => {
@@ -312,9 +457,11 @@ app.get('/user-orders/:userId', async (req, res) => {
   }
 });
 
-
-
 const PORT = process.env.PORT || 3003;
 app.listen(PORT, () => {
   console.log(`Server is running on port ${PORT}`);
 });
+
+
+
+
