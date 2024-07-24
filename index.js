@@ -11,9 +11,11 @@ app.use(express.json());
 
 
 // QPay token fetching API
-app.post('/qpay/token', async (req, res) => {
+const getQPayToken = async () => {
   const username = process.env.QPAY_USERNAME;
   const password = process.env.QPAY_PASSWORD;
+
+
 
   const authString = Buffer.from(`${username}:${password}`).toString('base64');
   const config = {
@@ -29,31 +31,38 @@ app.post('/qpay/token', async (req, res) => {
       {}, // Empty body since the token request does not require a body
       config
     );
-
-    console.log("QPay token fetched successfully");
-    console.log(response.data);
-    res.status(200).json({ access_token: response.data.access_token });
+    return response.data.access_token;
   } catch (error) {
-    console.error('Error fetching QPay token:', error.response ? error.response.data : error.message);
-    res.status(error.response ? error.response.status : 500).json({
-      error: error.response ? error.response.data : 'Internal Server Error',
+    throw new Error('Error fetching QPay token: ' + (error.response ? error.response.data : error.message));
+  }
+};
+
+app.post('/qpay/token', async (req, res) => {
+  try {
+    const token = await getQPayToken();
+    res.status(200).json({ access_token: token });
+  } catch (error) {
+    console.error('Error fetching QPay token:', error.message);
+    res.status(500).json({
+      error: 'Internal Server Error',
     });
   }
 });
-
-// Create QPay invoice API
+// Invoice creation endpoint
 app.post('/qpay/invoice', async (req, res) => {
   const { token, bookingId, amount, description, service, userId } = req.body;
   const invoice_code = process.env.INVOICE_CODE;
-  const callback_url = `http://www.emu.mn/api/qpay/callback/${bookingId}`;
+  const base_url = process.env.BASE_URL; // Ensure you have this environment variable set to your application's base URL
+  const callback_url = `https://d381-202-70-37-32.ngrok-free.app/qpay/callback/${bookingId}`;
   const sender_invoice_no = bookingId.toString();
 
   try {
+    console.log("Entering try block in qpay invoice");
     // Fetch user details from the database
     const user = await prisma.user.findUnique({
       where: { id: userId },
       select: {
-        name: true,
+        userName: true,
         email: true,
         phoneNumber: true,
       },
@@ -62,13 +71,23 @@ app.post('/qpay/invoice', async (req, res) => {
     if (!user) {
       return res.status(404).json({ error: 'User not found' });
     }
+    console.log(user, "User found in qpay invoice");
 
     // Construct the invoice receiver data
     const invoice_receiver_data = {
-      name: user.name,
+      name: user.userName,
       email: user.email,
       phone: user.phoneNumber,
     };
+
+    console.log(invoice_receiver_data, "Invoice receiver data");
+    console.log(invoice_code, "Invoice code");
+    console.log(sender_invoice_no, "Sender invoice no");
+    console.log(service, "Service");
+    console.log(description, "Description");
+    console.log(callback_url, "Callback URL");
+    console.log(amount, "Amount");
+    console.log(token, "Token");
 
     // Send the request to QPay
     const response = await axios.post('https://merchant.qpay.mn/v2/invoice', {
@@ -87,7 +106,9 @@ app.post('/qpay/invoice', async (req, res) => {
       },
     });
 
+    console.log(response.data, "Response from QPay");
     const invoiceId = response.data.invoice_id;
+    console.log(invoiceId, "Invoice ID from QPay");
 
     const newInvoice = await prisma.qPayInvoice.create({
       data: {
@@ -99,7 +120,9 @@ app.post('/qpay/invoice', async (req, res) => {
       },
     });
 
+    console.log(newInvoice, "New invoice created in database");
     const paymentDetail = newInvoice.id.toString();
+    console.log(paymentDetail, "Payment detail");
 
     // Update booking with the new QPayInvoice
     await prisma.booking.update({
@@ -118,6 +141,76 @@ app.post('/qpay/invoice', async (req, res) => {
     res.status(500).json({ error: 'Error creating QPay invoice' });
   }
 });
+
+// Callback endpoint
+app.get('/qpay/callback/:id', async (req, res) => {
+  console.log("handleQPayCallback called");
+  const { id } = req.params; // 'id' will be from the dynamic route segment
+  console.log("Booking ID:", id);
+
+  if (!id) {
+    console.log("Booking ID is missing");
+    return res.status(400).json({ error: "Booking ID is required" });
+  }
+
+  try {
+    const invoice = await prisma.qPayInvoice.findFirst({
+      where: { bookingId: parseInt(id) }, // Ensure bookingId is an integer
+    });
+    console.log("Fetched invoice:", invoice);
+
+    if (!invoice) {
+      console.log("Invoice not found for bookingId:", id);
+      return res.status(404).json({ error: "Invoice not found" });
+    }
+
+    // Construct the object to check the payment status
+    const obj = {
+      object_type: "INVOICE",
+      object_id: invoice.invoiceId,
+    };
+
+    // Fetch the QPay token
+    const token = await getQPayToken();
+    console.log("QPay token:", token);
+
+    // Perform the necessary operations with the QPay token
+    const checkPaymentResponse = await axios.post(
+      "https://merchant.qpay.mn/v2/payment/check",
+      obj,
+      {
+        headers: {
+          Authorization: `Bearer ${token}`,
+        },
+      }
+    );
+    console.log("Check payment response:", checkPaymentResponse.data);
+
+    // Extract payment status from response
+    const paymentStatus = checkPaymentResponse.data.rows[0].payment_status;
+    if (invoice.amount === checkPaymentResponse.data.paid_amount) {
+      const updatedBooking = await prisma.booking.update({
+        where: { id: parseInt(id) }, // Ensure id is an integer
+        data: { status: 'paid' },
+      });
+      console.log("Updated booking:", updatedBooking);
+      // You can also update the QPay invoice status here if needed
+      // const updateQpay = await prisma.qPayInvoice.update({
+      //   where: { id: invoice.id },
+      //   data: { status: 'paid' },
+      // });
+    }
+
+    res.status(200).json({ message: "Payment status updated successfully" });
+  } catch (error) {
+    console.error(
+      "Error handling QPay callback:",
+      error.response ? error.response.data : error.message
+    );
+    res.status(500).json({ error: "Error handling QPay callback" });
+  }
+});
+
 //  fetch users
 app.get('/users', async (req, res) => {
   try {
@@ -381,50 +474,61 @@ app.post('/bookings', async (req, res) => {
   try {
     const {
       scheduledTime,
-      carWashTypeId,
-      washType,
       carSize,
+      washType,
       date,
       endTime,
-      paymentDetail,
       price,
-      status,
-      timetableId,
       userId,
-      carWashServiceId,
+      timetable,
+      CarWashService,
       carNumber,
     } = req.body;
 
     if (
       !scheduledTime ||
-      !carWashTypeId ||
       !washType ||
       !carSize ||
       !date ||
       !endTime ||
       !price ||
-      !timetableId ||
+      !timetable ||
       !userId ||
-      !carWashServiceId
+      !CarWashService
     ) {
       return res.status(400).json({ error: 'Missing required fields' });
     }
 
+    // Function to add hours to a given date string
+    const addHours = (dateString, hours) => {
+      const date = new Date(dateString);
+      date.setHours(date.getHours() + hours);
+      return date.toISOString();
+    };
+    
+    // Adding 8 hours to the provided date strings
+    const updatedScheduledTime = addHours(scheduledTime, 8);
+    const updatedDate = addHours(date, 8);
+    const updatedEndTime = addHours(endTime, 8);
+
     const booking = await prisma.booking.create({
       data: {
-        scheduledTime: new Date(scheduledTime),
-        carWashTypeId,
+        scheduledTime: updatedScheduledTime,
         washType,
         carSize,
-        date: new Date(date),
-        endTime: new Date(endTime),
-        paymentDetail,
+        date: updatedDate,
+        endTime: updatedEndTime,
         price,
-        status,
-        timetableId,
-        userId,
-        carWashServiceId,
         carNumber,
+        user: {
+          connect: { id: userId } // Correctly connect the user
+        },
+        timetable: {
+          connect: { id: timetable } // Correctly connect the timetable
+        },
+        carwashService: {
+          connect: { id: CarWashService } // Correctly connect the car wash service
+        }
       },
     });
 
@@ -434,6 +538,7 @@ app.post('/bookings', async (req, res) => {
     res.status(500).json({ error: 'Failed to create booking' });
   }
 });
+
 
 // Add this route to your Express server
 
