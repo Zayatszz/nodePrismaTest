@@ -53,7 +53,7 @@ app.post('/qpay/invoice', async (req, res) => {
   const { token, bookingId, amount, description, service, userId } = req.body;
   const invoice_code = process.env.INVOICE_CODE;
   const base_url = process.env.BASE_URL; // Ensure you have this environment variable set to your application's base URL
-  const callback_url = `https://d381-202-70-37-32.ngrok-free.app/qpay/callback/${bookingId}`;
+  const callback_url = `https://champion-flamingo-vaguely.ngrok-free.app./qpay/callback/${bookingId}`;
   const sender_invoice_no = bookingId.toString();
 
   try {
@@ -424,6 +424,61 @@ app.post('/carwashservices', async (req, res) => {
     res.status(400).json({ error: error.message });
   }
 });
+
+// Route to fetch filtered CarwashServices
+app.get('/carwashservices/filter', async (req, res) => {
+  const { carType, washType, province, district } = req.query;
+
+  try {
+    // Build the query object based on the provided filters
+    const query = {
+      where: {
+        AND: []
+      },
+      include: {
+        carWashTypes: true,
+      }
+    };
+
+
+    if (carType && carType!=="null") {
+      query.where.AND.push({
+        carWashTypes: {
+          some: {
+            size: carType
+          }
+        }
+      });
+    }
+
+    if (washType && washType!=="null") {
+      query.where.AND.push({
+        carWashTypes: {
+          some: {
+            type: washType
+          }
+        }
+      });
+    }
+
+    if (province && province!=="null") {
+      query.where.AND.push({ province });
+    }
+
+    if (district && district!=="null") {
+      query.where.AND.push({ district });
+    }
+
+    // Fetch filtered carwash services from the database
+    const filteredCarwashServices = await prisma.carwashService.findMany(query);
+
+    res.json(filteredCarwashServices);
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ error: 'Failed to fetch filtered carwash services.' });
+  }
+});
+
 
 // GET endpoint to fetch bookings
 app.get('/bookings', async (req, res) => {
